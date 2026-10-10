@@ -1,0 +1,2 @@
+<resources><style name="Theme.PG" parent="android:Theme.Material.NoActionBar">
+<item name="android:windowBackground">#05060A</item><item name="android:statusBarColor">#05060A</item><item name="android:navigationBarColor">#05060A</item></style></resources>
