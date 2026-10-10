@@ -1,0 +1,304 @@
+#!/bin/bash
+set -e
+mkdir -p "$(dirname 'build.gradle.kts')"
+cat > 'build.gradle.kts' <<'PGEOF1'
+plugins {
+    id("com.android.application") version "8.5.2" apply false
+    id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+}
+PGEOF1
+mkdir -p "$(dirname 'gradle.properties')"
+cat > 'gradle.properties' <<'PGEOF2'
+android.useAndroidX=true
+PGEOF2
+mkdir -p "$(dirname 'settings.gradle.kts')"
+cat > 'settings.gradle.kts' <<'PGEOF3'
+pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+rootProject.name = "PrivacyGuard"
+include(":app")
+PGEOF3
+mkdir -p "$(dirname 'app/build.gradle.kts')"
+cat > 'app/build.gradle.kts' <<'PGEOF4'
+plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
+android {
+    namespace = "com.privacyguard.app"
+    compileSdk = 34
+    defaultConfig { applicationId = "com.privacyguard.app"; minSdk = 26; targetSdk = 34; versionCode = 1; versionName = "1.0" }
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
+    kotlinOptions { jvmTarget = "17" }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+}
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation("androidx.activity:activity-compose:1.9.1")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.core:core-ktx:1.13.1")
+}
+PGEOF4
+mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+cat > 'app/src/main/AndroidManifest.xml' <<'PGEOF5'
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <application android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:label="@string/app_name" android:theme="@style/Theme.PG">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
+        <service android:name=".OverlayService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Screen privacy dimming overlay"/>
+        </service>
+        <service android:name=".PrivacyTile" android:exported="true" android:label="PrivacyGuard"
+            android:icon="@android:drawable/ic_lock_lock" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>
+        </service>
+    </application>
+</manifest>
+PGEOF5
+mkdir -p "$(dirname 'app/src/main/java/com/privacyguard/app/MainActivity.kt')"
+cat > 'app/src/main/java/com/privacyguard/app/MainActivity.kt' <<'PGEOF6'
+package com.privacyguard.app
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+val Obsidian = Color(0xFF05060A); val Navy = Color(0xFF0B1426); val Cyan = Color(0xFF00E5FF); val Violet = Color(0xFF9B5CFF)
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(s: Bundle?) {
+        super.onCreate(s)
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        setContent { App() }
+    }
+}
+
+@Composable
+fun App() {
+    val ctx = LocalContext.current
+    var tab by remember { mutableStateOf(0) }
+    var on by remember { mutableStateOf(Prefs.on(ctx)) }
+    var dim by remember { mutableStateOf(Prefs.dim(ctx)) }
+    var accentIdx by remember { mutableStateOf(Prefs.accent(ctx)) }
+    val accent = if (accentIdx == 0) Cyan else Violet
+
+    fun apply(enable: Boolean) {
+        if (enable && !Settings.canDrawOverlays(ctx)) {
+            ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}")))
+            return
+        }
+        val i = Intent(ctx, OverlayService::class.java)
+        if (enable) ctx.startForegroundService(i) else ctx.stopService(i)
+        on = enable
+    }
+
+    Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Obsidian, Navy))).statusBarsPadding()) {
+        Column(Modifier.weight(1f).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("PrivacyGuard", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Text("Your screen stays yours.", color = accent, fontSize = 14.sp)
+            Spacer(Modifier.height(24.dp))
+            when (tab) {
+                0 -> {
+                    Box(Modifier.size(160.dp).clip(CircleShape).background(Brush.radialGradient(listOf(accent.copy(alpha = if (on) .5f else .15f), Color.Transparent)))
+                        .border(2.dp, accent, CircleShape), contentAlignment = Alignment.Center) { Image(painterResource(R.drawable.ic_launcher_foreground), contentDescription = "PrivacyGuard", modifier = Modifier.size(150.dp)) }
+                    Spacer(Modifier.height(20.dp))
+                    Text(if (on) "Protection ON" else "Protection OFF", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(12.dp))
+                    Switch(checked = on, onCheckedChange = { apply(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = accent, checkedThumbColor = Obsidian))
+                    Spacer(Modifier.height(12.dp))
+                    Text("Add the PrivacyGuard tile in Quick Settings for instant toggling.", color = Color.Gray, fontSize = 12.sp)
+                }
+                1 -> Card("Screen dimming") {
+                    Text("Strength ${(dim * 100).toInt()}%", color = Color.White)
+                    Slider(value = dim, onValueChange = { dim = it; Prefs.setDim(ctx, it) },
+                        onValueChangeFinished = { if (on) apply(true) }, valueRange = 0.1f..0.85f,
+                        colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent))
+                    Text("Software can dim your whole screen, which makes it harder for anyone to read it. It can't darken only the side angles. That needs a privacy screen protector or a compatible display.", color = Color.Gray, fontSize = 12.sp)
+                }
+                2 -> Card("Accent color") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        listOf(Cyan, Violet).forEachIndexed { i, c ->
+                            Box(Modifier.size(48.dp).clip(CircleShape).background(c)
+                                .border(if (accentIdx == i) 3.dp else 0.dp, Color.White, CircleShape)
+                                .clickable { accentIdx = i; Prefs.setAccent(ctx, i) })
+                        }
+                    }
+                }
+                else -> Card("Permissions") {
+                    Text("Display over other apps: " + if (Settings.canDrawOverlays(ctx)) "granted" else "needed", color = Color.White)
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}"))) },
+                        colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Obsidian)) { Text("Open permission settings") }
+                    Spacer(Modifier.height(8.dp))
+                    Text("No camera, no AI, no tracking, no cloud.", color = Color.Gray, fontSize = 12.sp)
+                }
+            }
+        }
+        NavigationBar(containerColor = Obsidian) {
+            listOf("Home", "Protection", "Appearance", "Settings").forEachIndexed { i, t ->
+                NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Text(listOf("🏠", "🛡", "🎨", "⚙")[i]) },
+                    label = { Text(t) }, colors = NavigationBarItemDefaults.colors(selectedTextColor = accent, indicatorColor = Navy))
+            }
+        }
+    }
+}
+
+@Composable
+fun Card(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Navy).padding(20.dp)) {
+        Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(12.dp)); content()
+    }
+}
+PGEOF6
+mkdir -p "$(dirname 'app/src/main/java/com/privacyguard/app/OverlayService.kt')"
+cat > 'app/src/main/java/com/privacyguard/app/OverlayService.kt' <<'PGEOF7'
+package com.privacyguard.app
+import android.app.*
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.os.IBinder
+import android.view.View
+import android.view.WindowManager
+
+class OverlayService : Service() {
+    private var view: View? = null
+    override fun onBind(i: Intent?): IBinder? = null
+
+    override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel("pg", "PrivacyGuard", NotificationManager.IMPORTANCE_LOW))
+        val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val n = Notification.Builder(this, "pg").setContentTitle("PrivacyGuard is on")
+            .setContentText("Tap to adjust").setSmallIcon(android.R.drawable.ic_lock_lock).setContentIntent(pi).build()
+        startForeground(1, n)
+        if (!android.provider.Settings.canDrawOverlays(this)) { stopSelf(); return START_NOT_STICKY }
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val v = view ?: View(this).also {
+            it.setBackgroundColor(Color.BLACK)
+            val lp = WindowManager.LayoutParams(-1, -1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT)
+            wm.addView(it, lp); view = it
+        }
+        v.alpha = Prefs.dim(this)
+        Prefs.setOn(this, true)
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        view?.let { (getSystemService(Context.WINDOW_SERVICE) as WindowManager).removeView(it) }
+        view = null
+        Prefs.setOn(this, false)
+        super.onDestroy()
+    }
+}
+PGEOF7
+mkdir -p "$(dirname 'app/src/main/java/com/privacyguard/app/Prefs.kt')"
+cat > 'app/src/main/java/com/privacyguard/app/Prefs.kt' <<'PGEOF8'
+package com.privacyguard.app
+import android.content.Context
+object Prefs {
+    private fun p(c: Context) = c.getSharedPreferences("pg", Context.MODE_PRIVATE)
+    fun on(c: Context) = p(c).getBoolean("on", false)
+    fun setOn(c: Context, v: Boolean) = p(c).edit().putBoolean("on", v).apply()
+    fun dim(c: Context) = p(c).getFloat("dim", 0.55f)
+    fun setDim(c: Context, v: Float) = p(c).edit().putFloat("dim", v).apply()
+    fun accent(c: Context) = p(c).getInt("accent", 0)
+    fun setAccent(c: Context, v: Int) = p(c).edit().putInt("accent", v).apply()
+}
+PGEOF8
+mkdir -p "$(dirname 'app/src/main/java/com/privacyguard/app/PrivacyTile.kt')"
+cat > 'app/src/main/java/com/privacyguard/app/PrivacyTile.kt' <<'PGEOF9'
+package com.privacyguard.app
+import android.content.Intent
+import android.service.quicksettings.Tile
+import android.service.quicksettings.TileService
+
+class PrivacyTile : TileService() {
+    override fun onStartListening() = refresh()
+    override fun onClick() {
+        val i = Intent(this, OverlayService::class.java)
+        if (Prefs.on(this)) stopService(i) else startForegroundService(i)
+        Prefs.setOn(this, !Prefs.on(this)); refresh()
+    }
+    private fun refresh() {
+        qsTile?.let { it.state = if (Prefs.on(this)) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE; it.updateTile() }
+    }
+}
+PGEOF9
+mkdir -p "$(dirname 'app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')"
+cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml' <<'PGEOF10'
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/pg_icon_bg"/>
+    <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+    <monochrome android:drawable="@drawable/ic_launcher_foreground"/>
+</adaptive-icon>
+PGEOF10
+mkdir -p "$(dirname 'app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml')"
+cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml' <<'PGEOF11'
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/pg_icon_bg"/>
+    <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+    <monochrome android:drawable="@drawable/ic_launcher_foreground"/>
+</adaptive-icon>
+PGEOF11
+mkdir -p "$(dirname 'app/src/main/res/values/colors.xml')"
+cat > 'app/src/main/res/values/colors.xml' <<'PGEOF12'
+<resources><color name="pg_icon_bg">#FF05060A</color></resources>
+PGEOF12
+mkdir -p "$(dirname 'app/src/main/res/values/strings.xml')"
+cat > 'app/src/main/res/values/strings.xml' <<'PGEOF13'
+<resources><string name="app_name">PrivacyGuard</string></resources>
+PGEOF13
+mkdir -p "$(dirname 'app/src/main/res/values/themes.xml')"
+cat > 'app/src/main/res/values/themes.xml' <<'PGEOF14'
+<resources><style name="Theme.PG" parent="android:Theme.Material.NoActionBar">
+<item name="android:windowBackground">#05060A</item><item name="android:statusBarColor">#05060A</item><item name="android:navigationBarColor">#05060A</item></style></resources>
+PGEOF14
+mkdir -p "$(dirname 'app/src/main/res/drawable/ic_launcher_foreground.xml')"
+cat > 'app/src/main/res/drawable/ic_launcher_foreground.xml' <<'PGEOF15'
+<vector xmlns:android="http://schemas.android.com/apk/res/android" xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M54,24 L78,33 V54 C78,70 67,80 54,86 C41,80 30,70 30,54 V33 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:startX="30" android:startY="24" android:endX="78" android:endY="86" android:type="linear">
+                <item android:offset="0" android:color="#FF00E5FF"/>
+                <item android:offset="1" android:color="#FF9B5CFF"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:fillColor="#FF05060A" android:pathData="M54,43 A7,7 0 1 1 54,57 A7,7 0 1 1 54,43 Z"/>
+    <path android:fillColor="#FF05060A" android:pathData="M51.5,55 H56.5 V69 H51.5 Z"/>
+</vector>
+PGEOF15
